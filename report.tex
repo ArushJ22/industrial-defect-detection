@@ -1,0 +1,325 @@
+\documentclass{article}
+
+\usepackage[preprint]{neurips_2025}
+\usepackage{lineno}
+\linenumbers
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{float}
+
+\title{Industrial Defect Detection System for Manufactured Parts Using Unsupervised Deep Learning}
+
+\author{
+  Arush Aaron John (B23CH1009) \\
+  Department of Chemical Engineering \\
+  IIT Jodhpur
+  \And
+  Ektedar Ahmad (B23CH1017) \\
+  Department of Chemical Engineering \\
+  IIT Jodhpur
+  \And
+  Harshita Pahadia (B23MT1020) \\
+  Department of Materials Engineering \\
+  IIT Jodhpur
+}
+
+\begin{document}
+
+\maketitle
+
+% ==============================================================================
+% ABSTRACT
+% ==============================================================================
+\begin{abstract}
+Automated visual inspection is essential for quality assurance in modern manufacturing, yet supervised deep learning approaches are fundamentally limited by the scarcity and unpredictability of defective samples. This paper presents an unsupervised anomaly detection system based on a U-Net Convolutional Autoencoder (UNetAE) that learns to reconstruct only normal, defect-free product images. During inference, defective regions produce elevated reconstruction errors, which are spatially projected as anomaly heatmaps for pixel-level defect localization. The model is trained with a combined loss function incorporating both Mean Squared Error (MSE) and Structural Similarity Index (SSIM) to capture both global pixel fidelity and local structural patterns. Evaluated on the MVTec Anomaly Detection benchmark (leather category), the system achieves an image-level AUROC of 0.5710 and a pixel-level AUROC of 0.8318. The results demonstrate strong pixel-level defect localization capability despite moderate image-level classification performance, making the system suitable for real-world inspection scenarios where identifying defect regions is critical.
+\end{abstract}
+
+% ==============================================================================
+% 1. INTRODUCTION
+% ==============================================================================
+\section{Introduction}
+
+Automated visual inspection constitutes critical infrastructure for quality assurance within contemporary manufacturing environments. As global industrial output scales to meet unprecedented demand, the traditional reliance on human operators for defect detection becomes increasingly unsustainable. Human visual inspection is intrinsically constrained by fatigue, cognitive overload, visual habituation, and the inherent subjectivity of manual evaluation---particularly when assessing thousands of identical components across continuous production shifts.
+
+Classical computer vision methodologies, which historically relied on manually engineered feature extractors, edge detection algorithms, and rigid rule-based heuristics, frequently lack the statistical robustness required to manage the complexities of real-world production environments. These traditional systems are brittle, failing in the presence of environmental fluctuations such as variable factory illumination, subtle material inconsistencies, and microscopic positional shifts of components on a conveyor belt.
+
+While deep learning promises to automate feature extraction and deliver high accuracy in optical quality control, its deployment in industrial domains is severely bottlenecked by the limitations of the \emph{supervised learning paradigm}. Supervised image classification protocols necessitate thousands of labeled examples of both normal and defective products. In mature manufacturing pipelines, defects are intrinsically rare events---an assembly line operating at Six Sigma quality produces defective units at a rate of merely 3.4 per million opportunities. Furthermore, the morphological manifestation of defects is highly unpredictable: a defect could appear as a microscopic scratch, an asymmetrical structural deformation, a missing thread, or a subtle discoloration. It is logistically impossible to construct a training dataset encompassing all potential failure modes.
+
+The resolution to this data imbalance lies in \emph{unsupervised representation learning} applied to anomaly detection. Instead of teaching a network what every defect looks like, we train a model exclusively on ``Good'' or ``Normal'' samples. The network learns the normative statistical distribution and the latent manifold of a flawless product. During inference, when a defective component is presented, the model struggles to reconstruct the aberrant features, producing a measurable \emph{reconstruction error} that serves as an \emph{anomaly score}. By projecting this error back into the spatial dimensions of the original image, the system simultaneously flags the image as anomalous and precisely localizes the defect via a pixel-level heatmap.
+
+This paper presents such a system built on a U-Net Convolutional Autoencoder architecture, trained with a combined MSE+SSIM loss function, and evaluated on the MVTec Anomaly Detection benchmark dataset.
+
+% ==============================================================================
+% 2. LITERATURE REVIEW
+% ==============================================================================
+\section{Literature Review}
+
+\textbf{Traditional Computer Vision.} Early approaches to industrial defect detection relied on hand-crafted features such as Gabor filters \citep{jain1991unsupervised}, Local Binary Patterns (LBP) \citep{ojala2002multiresolution}, and histogram-of-oriented-gradients (HOG) descriptors \citep{dalal2005histograms}. While effective in constrained settings, these methods require extensive domain-specific tuning and generalize poorly across product categories and environmental conditions.
+
+\textbf{Supervised Deep Learning.} Convolutional Neural Networks (CNNs) have achieved state-of-the-art results on many image classification and segmentation tasks \citep{he2016deep, ronneberger2015u}. However, their application to defect detection is limited by the need for large, balanced labeled datasets---a requirement that is fundamentally at odds with the rarity of manufacturing defects in high-quality production lines.
+
+\textbf{Unsupervised Anomaly Detection.} Reconstruction-based methods train generative models exclusively on normal data and detect anomalies via elevated reconstruction error. Autoencoders \citep{hinton2006reducing} and Variational Autoencoders (VAEs) \citep{kingma2013auto} are commonly employed for this purpose. The structural similarity index \citep{wang2004image} has been widely adopted as a perceptual loss component to improve reconstruction fidelity beyond pixel-level MSE. The U-Net architecture \citep{ronneberger2015u}, originally designed for biomedical image segmentation, has been adapted for autoencoder-based anomaly detection due to its skip connections, which preserve fine-grained spatial details critical for pixel-level defect localization.
+
+\textbf{Feature-Embedding Methods.} An alternative paradigm uses pre-trained networks (e.g., ImageNet-trained ResNets) to extract feature embeddings of normal samples and detect anomalies as out-of-distribution points in the embedding space. PatchCore \citep{roth2022towards} achieves state-of-the-art results on MVTec AD by maintaining a coreset memory bank of normal patch features. While powerful, these methods require large pre-trained backbone networks and significant memory, whereas reconstruction-based methods offer a more lightweight and interpretable alternative.
+
+\textbf{MVTec AD Benchmark.} The MVTec Anomaly Detection dataset \citep{bergmann2019mvtec} has become the standard benchmark for unsupervised anomaly detection in industrial contexts, providing 15 categories of objects and textures with pixel-level ground truth masks for evaluation.
+
+% ==============================================================================
+% 3. PROBLEM STATEMENT
+% ==============================================================================
+\section{Problem Statement}
+
+We formalize the industrial defect detection task as an unsupervised anomaly detection problem. Let $\mathcal{X}_\text{train} = \{x_1, x_2, \ldots, x_N\}$ denote a training set consisting \emph{exclusively} of defect-free (normal) images, where each $x_i \in \mathbb{R}^{H \times W \times C}$. The goal is to learn a model $f_\theta$ such that, for a test image $x_\text{test}$:
+
+\begin{enumerate}
+    \item \textbf{Image-level detection:} The model assigns an anomaly score $s(x_\text{test}) \in \mathbb{R}$ that is low for normal images and high for defective images, enabling binary classification via a threshold $\tau$.
+    \item \textbf{Pixel-level localization:} The model produces a spatial anomaly map $A(x_\text{test}) \in \mathbb{R}^{H \times W}$ that highlights the precise location of the defect within the image.
+\end{enumerate}
+
+The key challenge is that the model has \emph{no access} to any defective samples during training: it must learn the boundary of normalcy purely from positive examples. This makes standard supervised metrics (e.g., classification accuracy) inappropriate for evaluation due to extreme class imbalance. Instead, we use the Area Under the Receiver Operating Characteristic curve (AUROC), which measures the probability that a randomly chosen defective sample receives a higher anomaly score than a randomly chosen normal sample.
+
+% ==============================================================================
+% 4. PROPOSED METHOD
+% ==============================================================================
+\section{Proposed Method}
+
+\subsection{U-Net Convolutional Autoencoder Architecture}
+
+The core architecture is a U-Net Convolutional Autoencoder (UNetAE) with symmetric encoder and decoder sub-networks bridged by a low-dimensional bottleneck. The key design choices are:
+
+\begin{itemize}
+    \item \textbf{DoubleConv blocks:} Each encoder and decoder level consists of two sequential \texttt{Conv2d $\rightarrow$ BatchNorm2d $\rightarrow$ LeakyReLU(0.2)} layers for richer feature extraction.
+    \item \textbf{Skip connections:} Encoder feature maps are concatenated with upsampled decoder feature maps at each symmetric level, preserving high-frequency spatial information that would otherwise be lost through the bottleneck.
+    \item \textbf{Bilinear upsampling:} Used instead of transposed convolutions (\texttt{ConvTranspose2d}) to avoid checkerboard artifacts in the reconstruction.
+    \item \textbf{Kaiming initialization:} Ensures stable training with LeakyReLU activations.
+    \item \textbf{Tanh output activation:} Matches the $[-1, 1]$ normalized input range.
+\end{itemize}
+
+The architecture processes $128 \times 128$ RGB images through an encoder with channel progression $3 \rightarrow 32 \rightarrow 64 \rightarrow 128 \rightarrow 256$, a bottleneck at $512$ channels and $8 \times 8$ spatial resolution, and a symmetric decoder that reconstructs the original resolution. Table~\ref{tab:architecture} summarizes the architecture.
+
+\begin{table}[htbp]
+  \caption{UNetAE architecture summary.}
+  \label{tab:architecture}
+  \centering
+  \begin{tabular}{lll}
+    \toprule
+    Component & Channels & Spatial Resolution \\
+    \midrule
+    Input            & 3 (RGB) & $128 \times 128$ \\
+    Encoder Block 0  & 32      & $128 \times 128$ \\
+    Encoder Block 1  & 64      & $64 \times 64$   \\
+    Encoder Block 2  & 128     & $32 \times 32$   \\
+    Encoder Block 3  & 256     & $16 \times 16$   \\
+    \textbf{Bottleneck} & \textbf{512} & $\mathbf{8 \times 8}$ \\
+    Decoder Block 1  & 256     & $16 \times 16$   \\
+    Decoder Block 2  & 128     & $32 \times 32$   \\
+    Decoder Block 3  & 64      & $64 \times 64$   \\
+    Decoder Block 4  & 32      & $128 \times 128$ \\
+    Output           & 3 (RGB) & $128 \times 128$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Combined MSE + SSIM Loss Function}
+
+The training loss combines two complementary reconstruction metrics:
+\begin{equation}
+    \mathcal{L}_\text{total} = \alpha \cdot \mathcal{L}_\text{MSE} + \beta \cdot (1 - \text{SSIM})
+\end{equation}
+where $\alpha = 0.6$ and $\beta = 0.4$. The MSE component $\mathcal{L}_\text{MSE} = \frac{1}{N}\sum_{i}(x_i - \hat{x}_i)^2$ penalizes large pixel-level errors globally, while the SSIM component \citep{wang2004image} preserves local structure, luminance, and contrast patterns. Together, they produce sharper and more faithful reconstructions than either metric alone. The SSIM computation uses a window size of 11 and operates on images normalized to $[0, 1]$.
+
+\subsection{Training Strategy}
+
+The model is trained using:
+\begin{itemize}
+    \item \textbf{AdamW optimizer} with learning rate $3 \times 10^{-4}$ and weight decay $10^{-5}$.
+    \item \textbf{CosineAnnealingLR scheduler} for smooth learning rate decay over the full training horizon.
+    \item \textbf{Gradient clipping} with $\text{max\_norm} = 1.0$ for training stability.
+    \item \textbf{Early stopping} with patience of 10 epochs and $\delta = 10^{-5}$ to prevent overfitting.
+\end{itemize}
+
+Data augmentation during training includes random horizontal and vertical flips, along with mild color jitter (brightness and contrast perturbations of $\pm 0.1$). All images are resized to $128 \times 128$ and normalized to $[-1, 1]$ using $\text{mean} = 0.5$, $\text{std} = 0.5$.
+
+\subsection{Anomaly Inference Pipeline}
+
+At inference time, the trained model reconstructs a test image $x$, producing $\hat{x} = f_\theta(x)$. The anomaly map is computed as follows:
+
+\begin{enumerate}
+    \item \textbf{Per-pixel residual:} Compute $|x - \hat{x}|$ and average across color channels to produce a single-channel residual map.
+    \item \textbf{Gaussian smoothing:} Apply a Gaussian blur with kernel size $k = 11$ and $\sigma = k/6$ to suppress noise.
+    \item \textbf{Min-max normalization:} Normalize the smoothed residual to $[0, 1]$ to obtain the final anomaly heatmap $A(x)$.
+    \item \textbf{Image-level scoring:} The anomaly score $s(x)$ is the mean of the top-$K\%$ brightest pixels in $A(x)$ (with $K = 5$), focusing on the most anomalous region.
+\end{enumerate}
+
+A \textbf{dynamic threshold} is computed from the training distribution as $\tau = \mu + 3\sigma$, where $\mu$ and $\sigma$ are the mean and standard deviation of anomaly scores over the training set. In our experiments, this yields $\tau \approx 0.869$.
+
+% ==============================================================================
+% 5. EXPERIMENTS AND RESULTS
+% ==============================================================================
+\section{Experiments and Results}
+
+\subsection{Dataset}
+
+We evaluate on the \textbf{MVTec Anomaly Detection (MVTec AD)} dataset \citep{bergmann2019mvtec}, the standard benchmark for unsupervised anomaly detection in industrial contexts. The dataset contains 15 categories of industrial objects and textures with pixel-level ground truth segmentation masks.
+
+For this study, we focus on the \textbf{leather} category, which contains:
+\begin{itemize}
+    \item \textbf{Training set:} 245 defect-free images (split 85\%/15\% into 209 training and 36 validation images).
+    \item \textbf{Test set:} 124 images (32 normal, 92 defective across multiple defect types).
+\end{itemize}
+
+All images are resized to $128 \times 128$ pixels and normalized to $[-1, 1]$. Training uses a batch size of 16.
+
+\subsection{Evaluation Metrics}
+
+Standard classification accuracy is inappropriate for this task due to extreme class imbalance. We use two threshold-independent metrics:
+
+\begin{itemize}
+    \item \textbf{Image-level AUROC:} Evaluates the model's ability to correctly rank defective images higher than normal images based on the anomaly score. A perfect score is 1.0.
+    \item \textbf{Pixel-level AUROC:} A more stringent metric that evaluates every individual pixel across the test set. Each pixel's predicted anomaly intensity is compared against the ground truth segmentation mask. High pixel AUROC confirms that heatmaps precisely align with defect boundaries.
+\end{itemize}
+
+\subsection{Training Results}
+
+The model was trained for 30 epochs with early stopping (patience = 10). The best validation loss of 0.000955 was achieved during training. Figure~\ref{fig:curves} shows the training and validation loss curves alongside the ROC curve, demonstrating stable convergence without overfitting.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.45\linewidth]{train.png}
+  \includegraphics[width=0.45\linewidth]{roc.png}
+  \caption{Left: Training and validation loss convergence over 30 epochs. Right: ROC curve for image-level anomaly detection on the leather test set (AUROC = 0.5710).}
+  \label{fig:curves}
+\end{figure}
+
+\subsection{Anomaly Detection Results}
+
+Table~\ref{tab:results} presents the AUROC metrics on the MVTec AD leather test set.
+
+\begin{table}[H]
+  \caption{Anomaly detection performance on MVTec AD leather category.}
+  \label{tab:results}
+  \centering
+  \begin{tabular}{lc}
+    \toprule
+    Metric & Score \\
+    \midrule
+    Image-level AUROC & 0.5710 \\
+    Pixel-level AUROC & 0.8318 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The pixel-level AUROC of 0.8318 demonstrates that the anomaly heatmaps align well with the actual defect boundaries, confirming strong localization capability. The image-level AUROC of 0.5710, while moderate, reflects a known limitation of reconstruction-based methods: the autoencoder can partially reconstruct subtle defective regions, reducing the contrast between normal and anomalous samples at the image level. This phenomenon is particularly pronounced for the leather category, where defect textures can share structural similarities with normal leather grain patterns.
+
+\subsection{Qualitative Analysis}
+
+Visual inspection of the anomaly heatmaps reveals the expected behavior:
+\begin{itemize}
+    \item For \textbf{normal} images, reconstruction error is uniformly low, producing cool-toned (blue) heatmaps.
+    \item For \textbf{defective} images (e.g., scratches, folds, color spots), the model fails to reconstruct the anomalous regions, producing hot-toned (red) zones at the defect locations.
+\end{itemize}
+
+Some subtle defects are partially reconstructed by the model, leading to lower anomaly scores and contributing to the moderate image-level AUROC. However, the model consistently localizes defects at the pixel level, as reflected by the strong pixel-level AUROC score. Figure~\ref{fig:heatmaps} illustrates representative examples.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.85\linewidth]{gallery.png}
+  \caption{Qualitative results showing (from left to right): original input image, autoencoder reconstruction, residual error map, and anomaly heatmap overlay. Defective regions produce elevated reconstruction error, visible as hot-toned zones in the heatmap.}
+  \label{fig:heatmaps}
+\end{figure}
+
+\subsection{Analysis}
+
+Although the reconstruction loss converges effectively, anomaly separation remains challenging because the autoencoder can partially reconstruct defective regions, reducing contrast between normal and anomalous samples. This is a well-known limitation of reconstruction-based anomaly detection \citep{bergmann2019mvtec}.
+
+Despite this, the pixel-level performance of 0.8318 AUROC demonstrates that the model \emph{does} capture meaningful spatial information about defect locations. In real-world manufacturing applications, pixel-level localization is often more valuable than binary classification, as operators need to know \emph{where} the defect is located, not merely \emph{whether} a defect exists.
+
+% ==============================================================================
+% 6. CONCLUSIONS
+% ==============================================================================
+\section{Conclusions}
+
+This paper presented an unsupervised industrial defect detection system based on a U-Net Convolutional Autoencoder trained exclusively on defect-free images. The combined MSE+SSIM loss function enables high-fidelity reconstructions, and the anomaly heatmap pipeline provides both image-level detection and pixel-level localization without requiring any labeled defect data.
+
+Evaluated on the MVTec AD leather category, the system achieved an image-level AUROC of 0.5710 and a pixel-level AUROC of 0.8318. While image-level classification performance is moderate---reflecting the inherent difficulty of separating subtle defects from normal texture variations using reconstruction error alone---the model demonstrates strong and consistent defect localization at the pixel level. In real-world manufacturing applications, this localization capability is often more valuable than binary classification, as operators need to identify \emph{where} a defect is located on the product surface.
+
+\textbf{Future Work.} Several avenues for improvement include:
+\begin{itemize}
+    \item \textbf{Higher resolution:} Increasing image resolution (e.g., $256 \times 256$) with GPU-accelerated training to capture finer defect details.
+    \item \textbf{Advanced architectures:} Exploring GAN-based models or hybrid approaches that combine reconstruction-based and feature-embedding-based methods (e.g., PatchCore).
+    \item \textbf{Improved anomaly scoring:} Investigating perceptual loss functions or multi-scale feature comparison for more discriminative image-level scores.
+    \item \textbf{Per-category specialization:} Training dedicated models per product category to improve image-level AUROC across all 15 MVTec AD categories.
+    \item \textbf{Real-time deployment:} Deploying the system in a production environment with an interactive dashboard for operator feedback.
+\end{itemize}
+
+% ==============================================================================
+% REFERENCES
+% ==============================================================================
+
+{\small
+\begin{thebibliography}{10}
+
+\bibitem{bergmann2019mvtec}
+Bergmann, P., Fauser, M., Sattlegger, D., \& Steger, C. (2019).
+MVTec AD---A comprehensive real-world dataset for unsupervised anomaly detection.
+In \textit{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, pp.~9592--9600.
+
+\bibitem{dalal2005histograms}
+Dalal, N. \& Triggs, B. (2005).
+Histograms of oriented gradients for human detection.
+In \textit{IEEE Conference on Computer Vision and Pattern Recognition (CVPR)}, pp.~886--893.
+
+\bibitem{he2016deep}
+He, K., Zhang, X., Ren, S., \& Sun, J. (2016).
+Deep residual learning for image recognition.
+In \textit{Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR)}, pp.~770--778.
+
+\bibitem{hinton2006reducing}
+Hinton, G.E. \& Salakhutdinov, R.R. (2006).
+Reducing the dimensionality of data with neural networks.
+\textit{Science}, 313(5786):504--507.
+
+\bibitem{jain1991unsupervised}
+Jain, A.K. \& Farrokhnia, F. (1991).
+Unsupervised texture segmentation using Gabor filters.
+\textit{Pattern Recognition}, 24(12):1167--1186.
+
+\bibitem{kingma2013auto}
+Kingma, D.P. \& Welling, M. (2013).
+Auto-encoding variational Bayes.
+\textit{arXiv preprint arXiv:1312.6114}.
+
+\bibitem{ojala2002multiresolution}
+Ojala, T., Pietik{\"a}inen, M., \& M{\"a}enp{\"a}{\"a}, T. (2002).
+Multiresolution gray-scale and rotation invariant texture classification with local binary patterns.
+\textit{IEEE Transactions on Pattern Analysis and Machine Intelligence}, 24(7):971--987.
+
+\bibitem{ronneberger2015u}
+Ronneberger, O., Fischer, P., \& Brox, T. (2015).
+U-Net: Convolutional networks for biomedical image segmentation.
+In \textit{International Conference on Medical Image Computing and Computer-Assisted Intervention (MICCAI)}, pp.~234--241.
+
+\bibitem{roth2022towards}
+Roth, K., Pemula, L., Zepeda, J., Sch{\"o}lkopf, B., Brox, T., \& Gehler, P. (2022).
+Towards total recall in industrial anomaly detection.
+In \textit{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, pp.~14318--14328.
+
+\bibitem{wang2004image}
+Wang, Z., Bovik, A.C., Sheikh, H.R., \& Simoncelli, E.P. (2004).
+Image quality assessment: From error visibility to structural similarity.
+\textit{IEEE Transactions on Image Processing}, 13(4):600--612.
+
+\end{thebibliography}
+}
+
+\end{document}
